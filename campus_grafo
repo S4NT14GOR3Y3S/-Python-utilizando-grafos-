@@ -1,0 +1,235 @@
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Set
+
+@dataclass
+class Node:
+    id: str
+    category: str  
+@dataclass
+class Edge:
+    src: str
+    dst: str
+    length: float  
+    congestion: str  
+    path_type: str  
+    bidirectional: bool = False
+    closed: bool = False
+    restriction: Optional[str] = None  
+
+class CampusGraph:
+    def __init__(self):
+        self.nodes: Dict[str, Node] = {}
+        self.edges: List[Edge] = []
+
+    def add_node(self, node_id: str, category: str):
+        self.nodes[node_id] = Node(node_id, category)
+
+    def add_edge(self, src: str, dst: str, length: float, congestion: str, path_type: str,
+                 bidirectional: bool=False, closed: bool=False, restriction: Optional[str]=None):
+        e = Edge(src, dst, length, congestion, path_type, bidirectional, closed, restriction)
+        self.edges.append(e)
+
+    def neighbors(self, node_id: str) -> List[Tuple[Edge, str]]:
+        """Return list of (edge, neighbor_id) considering directionality and bidirectional edges"""
+        results = []
+        for e in self.edges:
+            if e.src == node_id and not e.closed:
+                results.append((e, e.dst))
+            if e.bidirectional and e.dst == node_id and not e.closed:
+                
+                results.append((e, e.src))
+       
+        return results
+
+    def all_simple_paths(self, start: str, goal: str, max_hops: int=6) -> List[List[Edge]]:
+        """Enumerate simple paths (no repeating nodes) up to max_hops edges. Each path is list of Edge objects in travel order."""
+        paths: List[List[Edge]] = []
+        visited: Set[str] = set()
+
+        def dfs(current: str, target: str, path_edges: List[Edge]):
+            if len(path_edges) > max_hops:
+                return
+            if current == target and path_edges:
+                paths.append(list(path_edges))
+                return
+            visited.add(current)
+            for e, nbr in self.neighbors(current):
+                
+                if nbr in visited:
+                    continue
+                
+                if not e.bidirectional and e.src != current:
+                    continue
+                path_edges.append(e)
+                dfs(nbr, target, path_edges)
+                path_edges.pop()
+            visited.remove(current)
+
+        dfs(start, goal, [])
+        return paths
+
+    def path_metrics(self, path: List[Edge]) -> Dict:
+        total_length = 0.0
+        congestions = {'alta':0, 'media':0, 'baja':0}
+        types = {}
+        closed_segments = 0
+        for e in path:
+            total_length += e.length
+            congestions[e.congestion] = congestions.get(e.congestion,0)+1
+            types[e.path_type] = types.get(e.path_type,0)+1
+            if e.closed:
+                closed_segments += 1
+        
+        score = total_length + congestions['alta']*50 + congestions['media']*20  
+        return {
+            'length': total_length,
+            'congestion_count': congestions,
+            'types': types,
+            'closed_segments': closed_segments,
+            'score': score
+        }
+
+    def recommend_routes(self, start: str, goal: str, mode: str='peatonal', avoid_congestion_levels: Optional[List[str]]=None,
+                         prefer_green: bool=False, max_hops: int=6, top_k: int=5, allow_closed=False) -> List[Dict]:
+        """
+        Generate candidate simple paths and rank them.
+        - mode: 'peatonal'|'bicicleta'|'mixto' indicates user's travel mode
+        - avoid_congestion_levels: list of congestion levels to avoid e.g. ['alta'] during peak hours
+        - prefer_green: if True, add a bonus to paths that pass through 'Zona Verde' nodes
+        - allow_closed: if False, paths using closed edges are discarded
+        """
+        raw_paths = self.all_simple_paths(start, goal, max_hops=max_hops)
+        candidates = []
+        for p in raw_paths:
+           
+            if not allow_closed and any(e.closed for e in p):
+                continue
+            
+            if mode == 'peatonal' and any(e.path_type == 'solo_bicicletas' for e in p):
+                continue
+            if mode == 'bicicleta' and any(e.path_type == 'peatonal' for e in p):
+                
+                pass
+
+            metrics = self.path_metrics(p)
+
+            
+            if avoid_congestion_levels and any(level in ['alta','media','baja'] and metrics['congestion_count'].get(level,0)>0 for level in avoid_congestion_levels):
+                
+                metrics['score'] += 1000
+
+    
+            node_sequence = [p[0].src] + [e.dst for e in p]
+            green_bonus = 0
+            if prefer_green:
+                for nid in node_sequence:
+                    if self.nodes[nid].category.lower().startswith('zona'):
+                        
+                        green_bonus -= 40
+                metrics['score'] += green_bonus
+
+            candidates.append({'path': p, 'metrics': metrics, 'nodes': node_sequence})
+
+        
+        candidates.sort(key=lambda x: x['metrics']['score'])
+        return candidates[:top_k]
+
+    def pretty_print_route(self, route_dict: Dict) -> str:
+        nodes = route_dict['nodes']
+        metrics = route_dict['metrics']
+        segs = []
+        for e in route_dict['path']:
+            segs.append(f"{e.src}->{e.dst} ({e.length}m, {e.congestion}, {e.path_type}{', CLOSED' if e.closed else ''})")
+        return (f"Ruta: {' -> '.join(nodes)}\n"
+                f"  Segmentos:\n    " + "\n    ".join(segs) + "\n"
+                f"  Longitud total: {metrics['length']} m\n"
+                f"  Congestión (counts): {metrics['congestion_count']}\n"
+                f"  Tipos de camino: {metrics['types']}\n"
+                f"  Score: {metrics['score']}\n")
+
+g = CampusGraph()
+
+
+g.add_node('Aulas', 'Aula')
+g.add_node('Biblioteca', 'Biblioteca')
+g.add_node('Laboratorio', 'Laboratorio de Software')
+g.add_node('Cafeteria', 'Cafetería')
+g.add_node('Administracion', 'Administración')
+
+
+g.add_node('ZonaVerde', 'Zona Verde')
+g.add_node('Parqueadero', 'Parqueadero')
+g.add_node('Auditorio', 'Auditorio')
+
+
+edges_to_add = [
+    
+    ('Aulas', 'Biblioteca', 120, 'alta', 'peatonal', True, False, None),
+    ('Aulas', 'Cafeteria', 60, 'media', 'mixto', True, False, None),
+    ('Biblioteca', 'ZonaVerde', 80, 'baja', 'peatonal', True, False, None),
+    ('Cafeteria', 'Parqueadero', 150, 'media', 'mixto', True, False, None),
+    ('Parqueadero', 'Administracion', 200, 'baja', 'mixto', True, False, None),
+    ('ZonaVerde', 'Auditorio', 90, 'baja', 'peatonal', True, False, None),
+
+    
+    ('Laboratorio', 'Aulas', 140, 'media', 'mixto', False, False, None),
+    ('Administracion', 'Laboratorio', 220, 'alta', 'mixto', False, False, None),
+    ('Biblioteca', 'Laboratorio', 180, 'media', 'solo_bicicletas', False, False, None),
+    ('Auditorio', 'Cafeteria', 110, 'alta', 'peatonal', False, False, None),
+
+    
+    ('Aulas', 'Parqueadero', 300, 'baja', 'mixto', False, True, 'cerrado_por_evento'),  
+    ('ZonaVerde', 'Cafeteria', 70, 'media', 'peatonal', False, True, 'mantenimiento'),    
+    ('Parqueadero', 'Auditorio', 160, 'media', 'mixto', True, False, None),
+]
+
+for e in edges_to_add:
+    g.add_edge(*e)
+
+
+total_edges = len(g.edges)
+directed_count = sum(1 for e in g.edges if not e.bidirectional)
+bidirectional_count = sum(1 for e in g.edges if e.bidirectional)
+closed_count = sum(1 for e in g.edges if e.closed)
+
+print(f"Construido: {len(g.nodes)} nodos, {total_edges} aristas ({directed_count} dirigidas, {bidirectional_count} bidireccionales), {closed_count} cerradas temporalmente)\n")
+
+
+
+print("=== Escenario 1: Caminando, hora pico (evitar 'alta') Aulas -> Biblioteca ===\n")
+routes_peak = g.recommend_routes('Aulas', 'Biblioteca', mode='peatonal', avoid_congestion_levels=['alta'], prefer_green=False, max_hops=5, top_k=5)
+if not routes_peak:
+    print("No se encontraron rutas que cumplan las restricciones (puede que segmentos estén cerrados o sean solo bicicletas).\n")
+else:
+    for r in routes_peak:
+        print(g.pretty_print_route(r))
+        print("-----")
+
+
+print("\n=== Escenario 2: Caminando, off-peak, preferir zonas verdes Aulas -> Biblioteca ===\n")
+routes_offpeak = g.recommend_routes('Aulas', 'Biblioteca', mode='peatonal', avoid_congestion_levels=None, prefer_green=True, max_hops=6, top_k=5)
+for r in routes_offpeak:
+    print(g.pretty_print_route(r))
+    print("-----")
+
+
+print("\n=== Escenario 3: Bicicleta Biblioteca -> Laboratorio ===\n")
+routes_bike = g.recommend_routes('Biblioteca', 'Laboratorio', mode='bicicleta', avoid_congestion_levels=None, prefer_green=False, max_hops=5, top_k=5)
+for r in routes_bike:
+    print(g.pretty_print_route(r))
+    print("-----")
+
+
+print("\n=== Escenario 4: Forzar incluir segmentos cerrados (uso administrativo) Aulas -> Cafeteria ===\n")
+routes_with_closed = g.recommend_routes('Aulas', 'Cafeteria', mode='peatonal', allow_closed=True, prefer_green=False, max_hops=5, top_k=5)
+for r in routes_with_closed:
+    print(g.pretty_print_route(r))
+    print("-----")
+
+
+print("\nResumen de nodos (id : categoria):")
+for nid, node in g.nodes.items():
+    print(f" - {nid} : {node.category}")
+print("\nResumen de aristas (src->dst, length, congestion, type, bidir, closed):")
+for e in g.edges:
+    print(f" - {e.src}->{e.dst}, {e.length}m, {e.congestion}, {e.path_type}, bidir={e.bidirectional}, closed={e.closed}, restr={e.restriction}")
